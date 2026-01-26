@@ -1,0 +1,421 @@
+#!/bin/bash
+
+#  prettypy.sh
+#  Script to manage Python projects using pyenv and virtual environment
+#
+#  Created by Alireza on 1/25/26.
+
+set -e
+
+# Global parameters
+BASE_DIRECTORY=""
+PROJECT_DIRECTORY=""
+SRC_DIRECTORY=""
+TEST_DIRECTORY=""
+VENV_DIRECTORY=""
+PROJECT_TITLE=""
+PYTHON_VERSION=""
+REQUIREMENTS_FILE=""
+PYTHON_VERSION_FILE=""
+
+function main() {
+    echo "========================================="
+    echo "  Welcome to PrettyPy CLI Tool!"
+    echo "========================================="
+    echo
+
+    if [ $# -eq 0 ]; then
+        usage
+    fi
+
+    BASE_DIRECTORY="$(pwd)"
+
+    # Check if the `pyenv` library is installed on the system.
+    # `pyenv` is required to manage different python versions.
+    check_pyenv
+
+    # Project directory setup
+    determine_project_directory
+
+    cd "$PROJECT_DIRECTORY"
+    echo "✓ Changed to project directory at: $(pwd)"
+
+    case "$1" in
+        --init)
+            init
+            ;;
+        --install)
+            install
+            ;;
+        --exec)
+            if [ -z "$2" ]; then
+                echo "Error: --exec requires a python file path"
+                usage
+                exit 1
+            fi
+            execute "$2"
+            ;;
+        --activate)
+            activate_venv
+            ;;
+        --deactivate)
+            deactivate_venv
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            echo "Error: Unknown option '$1'"
+            usage
+            ;;
+    esac
+
+    echo "========================================="
+    echo
+}
+
+function check_pyenv() {
+    echo "Checking if 'pyenv' is installed..."
+
+    if ! command -v pyenv &> /dev/null; then
+        echo "Error: pyenv is not installed."
+        echo "Install it using: brew install pyenv"
+        echo "Ensure your HomeBrew is updated to access the latest Python versions."
+        exit 1
+    fi
+
+    eval "$(pyenv init -)"
+
+    echo "✓ pyenv is installed"
+    echo
+}
+
+function determine_project_directory() {
+    read -p "Enter the base directory path for the project (or press Enter to use current directory): " PROJECT_PATH
+    echo
+
+    read -p "Enter the project title: " PROJECT_TITLE
+    echo
+
+    if [[ -z "$PROJECT_TITLE" ]]; then
+        PROJECT_TITLE="default-no-name"
+    fi
+
+    if [[ -z "$PROJECT_PATH" ]]; then
+        PROJECT_DIRECTORY="$(pwd)/$PROJECT_TITLE"
+        echo "Using current directory as base path for the project: $(pwd)"
+        mkdir -p "$PROJECT_DIRECTORY"
+    else
+        PROJECT_DIRECTORY="$PROJECT_PATH/$PROJECT_TITLE"
+        if [[ -d "$PROJECT_DIRECTORY" ]]; then
+            echo "Directory already exists at $PROJECT_DIRECTORY"
+            read -p "Do you want to continue with this directory? (y/n): " choice
+            if [ "$choice" != "y" ]; then
+                echo "Project setup cancelled."
+            fi
+        else
+            mkdir -p "$PROJECT_DIRECTORY"
+            echo "✓ Created directory at: $PROJECT_DIRECTORY"
+        fi
+    fi
+    VENV_DIRECTORY="$PROJECT_DIRECTORY/.venv"
+    REQUIREMENTS_FILE="$PROJECT_DIRECTORY/requirements.txt"
+    PYTHON_VERSION_FILE="$PROJECT_DIRECTORY/.python-version"
+    echo
+}
+
+function setup_project_structure() {
+    SRC_DIRECTORY="$PROJECT_DIRECTORY/src"
+    TESTS_DIRECTORY="$PROJECT_DIRECTORY/tests"
+    mkdir -p "$SRC_DIRECTORY/$PROJECT_TITLE"
+    mkdir -p "$TESTS_DIRECTORY"
+}
+
+function init() {
+    echo "========================================="
+    echo "  Project Initialization"
+    echo "========================================="
+    echo
+
+    # Setup project structure
+    setup_project_structure
+
+    # Show available Python versions
+    echo "Available Python versions (showing last 10):"
+    pyenv install --list | grep -E '^\s*[0-9]+\.[0-9]+\.[0-9]+$' | tail -10
+    echo
+
+    read -p "Enter your desired Python version (e.g., 3.14.2): " PYTHON_VERSION
+
+    if [[ -z "$PYTHON_VERSION" ]]; then
+        echo "Error: Python version cannot be empty"
+        exit 1
+    fi
+
+    echo
+    echo "Installing Python $PYTHON_VERSION..."
+    # Check if version is already installed
+    if pyenv versions --bare | grep -q "^${PYTHON_VERSION}$"; then
+        echo "✓ Python $PYTHON_VERSION is already installed"
+    else
+        pyenv install "$PYTHON_VERSION"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to install Python $PYTHON_VERSION"
+            exit 1
+        fi
+        echo "✓ Python $PYTHON_VERSION installed successfully"
+    fi
+
+    echo
+    echo "Setting project to use Python $PYTHON_VERSION..."
+    pyenv local "$PYTHON_VERSION"
+    echo "✓ Python version set (saved to $PROJECT_DIRECTORY/$PYTHON_VERSION_FILE)"
+
+    echo
+    echo "Creating virtual environment..."
+    if [ -d "$VENV_DIRECTORY" ]; then
+        echo "Virtual environment already exists at $VENV_DIRECTORY"
+        read -p "Do you want to recreate it? (y/n): " choice
+        if [ "$choice" = "y" ]; then
+            rm -rf "$VENV_DIRECTORY"
+            python -m venv "$VENV_DIRECTORY"
+            echo "✓ Virtual environment recreated"
+        else
+            echo "Continuing with existing virtual environment"
+        fi
+    else
+        python -m venv "$VENV_DIRECTORY"
+        echo "✓ Virtual environment created at $VENV_DIRECTORY"
+    fi
+
+    echo
+
+    read -p "Do you want to install the packages now? (y/n): " install_choice
+    if [ "$install_choice" = "y" ]; then
+        install
+    else
+        echo "You can install packages later using: $0 --install"
+    fi
+
+    # Generate project files
+    generate_project_files
+
+    echo
+    echo "========================================="
+    echo "  ✓ Initialization Complete!"
+    echo "========================================="
+    echo "To activate the virtual environment, run:"
+    echo "\$ source $VENV_DIRECTORY/bin/activate"
+    echo
+}
+
+function install() {
+    echo "Installing package dependencies from '$REQUIREMENTS_FILE'..."
+    echo
+
+    if [[ ! -f "$REQUIREMENTS_FILE" ]]; then
+        touch "$REQUIREMENTS_FILE"
+    fi
+
+    if [[ ! -f "$VENV_DIRECTORY/bin/activate" ]]; then
+        echo "Error: Virtual environment not found at $VENV_DIRECTORY"
+        echo "Please run '$0 --init' first."
+        exit 1
+    fi
+
+    echo
+    add_packages
+
+    echo
+    if [[ ! -s "$REQUIREMENTS_FILE" ]]; then
+        echo "Warning: $REQUIREMENTS_FILE is empty. No packages to install."
+        return
+    fi
+
+    source "$VENV_DIRECTORY/bin/activate"
+
+    echo
+    echo "Upgrading pip..."
+    pip install --upgrade pip --quiet
+
+    echo "Installing packages..."
+    pip install -r "$REQUIREMENTS_FILE"
+
+    if [ $? -eq 0 ]; then
+        echo
+        echo "✓ All packages installed successfully!"
+    else
+        echo
+        echo "Error: Package installation failed"
+        deactivate
+        exit 1
+    fi
+
+    deactivate
+}
+
+function execute() {
+    local PYTHON_FILE="$1"
+
+    echo "Executing Python file: $PYTHON_FILE"
+    echo
+
+    if [[ ! -f "$PYTHON_FILE" ]]; then
+        echo "Error: Python file not found at '$PYTHON_FILE'"
+        exit 1
+    fi
+
+    if [[ ! -f "$VENV_DIRECTORY/bin/activate" ]]; then
+        echo "Error: Virtual environment not found at $VENV_DIRECTORY"
+        echo "Please run '$0 --init' first."
+        exit 1
+    fi
+
+    source "$VENV_DIRECTORY/bin/activate"
+
+    python "$PYTHON_FILE"
+    local exit_code=$?
+
+    deactivate
+
+    echo
+    if [ $exit_code -eq 0 ]; then
+        echo "✓ Execution completed successfully"
+    else
+        echo "✗ Execution failed with exit code $exit_code"
+    fi
+
+    exit $exit_code
+}
+
+function activate_venv() {
+    if [[ ! -f "$VENV_DIRECTORY/bin/activate" ]]; then
+        echo "Error: Virtual environment not found at $VENV_DIRECTORY"
+        echo "Please run '$0 --init' first."
+        exit 1
+    fi
+
+    echo "To activate the virtual environment, run:"
+    echo
+    echo "  source $VENV_DIRECTORY/bin/activate"
+    echo
+    echo "Note: This script cannot activate the environment in your current shell."
+    echo "You must run the above command directly in your terminal."
+}
+
+function deactivate_venv() {
+    echo "To deactivate the virtual environment, run:"
+    echo
+    echo "  deactivate"
+    echo
+    echo "Note: This only works if you have an active virtual environment."
+}
+
+function add_packages() {
+    echo "Package Dependencies Setup"
+    echo "-------------------------"
+    read -p "Do you want to add package dependencies? (y/n): " add_deps
+
+    if [ "$add_deps" != "y" ]; then
+        echo "Skipping package dependencies addition. You can add them later to $REQUIREMENTS_FILE"
+        echo
+        touch "$REQUIREMENTS_FILE"
+        return
+    fi
+
+    echo
+    echo "Enter package names with versions (format: PACKAGE_NAME==VERSION)"
+    echo "Example: pandas==2.3.3"
+    echo "Press Ctrl+D when done, or Ctrl+C to cancel"
+    echo
+    echo "Packages:"
+
+    cat >> "$REQUIREMENTS_FILE"
+
+    if [ -s "$REQUIREMENTS_FILE" ]; then
+        echo
+        echo "✓ Saved packages to $REQUIREMENTS_FILE"
+        echo
+        echo "Contents of $REQUIREMENTS_FILE:"
+        cat "$REQUIREMENTS_FILE"
+    else
+        echo
+        echo "No packages added."
+    fi
+}
+
+# Function to display usage
+function usage() {
+    echo "Usage: $0 '[--init | --install | --exec PYTHON_FILE_PATH | --activate | --deactivate]'"
+    echo ""
+    echo "Options:"
+    echo "  --init                      Initializes the project"
+    echo "  --install                   Installs package dependencies using requirements.txt"
+    echo "  --exec PYTHON_FILE_PATH     Executes python file at relative path PYTHON_FILE_PATH"
+    echo "  --activate                  Activates virtual environment"
+    echo "  --deactivate                Deactivates virtual environment"
+    echo "  --help                      How to use the script"
+    echo ""
+    echo "Examples:"
+    echo "  $0 --init"
+    echo "  $0 --exec relative/path/to/MyFile.py"
+    exit 1
+}
+
+# Templates
+function generate_project_files() {
+    MAIN_PY="$SRC_DIRECTORY/$PROJECT_TITLE/main.py"
+    PY_PROJECT="$PROJECT_DIRECTORY/pyproject.toml"
+    README="$PROJECT_DIRECTORY/README.md"
+    # main.py
+    cat > "$MAIN_PY" << EOF
+import os
+
+header = ""
+subheader = ""
+
+def main(current_directory: str):
+    try:
+        print(current_directory)
+    except Exception as error:
+        print(f"\n✗ Error: {error}")
+    return
+
+if __name__ == "__main__":
+    current_directory = os.getcwd()
+    project_directory_name = os.path.basename(current_directory)
+    title = f"   Welcome to {project_directory_name.upper()} Project   "
+    header = "=" * len(title)
+    subheader = "-" * len(title)
+    print()
+    print(header)
+    print(title)
+    print(header)
+    print()
+
+    main(current_directory=current_directory)
+EOF
+    #pyproject.toml
+    cat > "$PY_PROJECT" << EOF
+[project]
+name = "$PROJECT_TITLE"
+version = "1.0.0"
+description = "Project description here..."
+license = "MIT AND (Apache-2.0 OR BSD-2-Clause)"
+readme = "README.md"
+requires-python = ">=$PYTHON_VERSION"
+
+EOF
+    #README.md
+    cat > "$README" << EOF
+# "$PROJECT_TITLE"
+To execute the project follow commands below:
+\`\`\`
+$ cd $PROJECT_DIRECTORY
+$ source $VENV_DIRECTORY/bin/activate
+$ python main.py
+\`\`\`
+EOF
+}
+
+main $@
